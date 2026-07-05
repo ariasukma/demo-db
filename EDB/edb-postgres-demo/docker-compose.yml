@@ -1,0 +1,262 @@
+name: ${COMPOSE_PROJECT_NAME:-edb_postgres_demo}
+
+x-project-labels: &project-labels
+  project: edb-postgres-demo
+
+x-pg-env: &pg-env
+  POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_demo_password}
+  POSTGRES_DB: ${POSTGRES_DB:-postgres}
+  DEMO_DB: ${DEMO_DB:-demo}
+  APP_READONLY_PASSWORD: ${APP_READONLY_PASSWORD:-readonly_demo_password}
+  APP_WRITER_PASSWORD: ${APP_WRITER_PASSWORD:-writer_demo_password}
+  APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-admin_demo_password}
+  REPLICATION_USER: ${REPLICATION_USER:-replicator}
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator_demo_password}
+  BARMAN_USER: ${BARMAN_USER:-barman}
+  BARMAN_PASSWORD: ${BARMAN_PASSWORD:-barman_demo_password}
+
+x-pg-command: &pg-command
+  - postgres
+  - -c
+  - wal_level=logical
+  - -c
+  - max_wal_senders=20
+  - -c
+  - max_replication_slots=20
+  - -c
+  - hot_standby=on
+  - -c
+  - shared_buffers=256MB
+  - -c
+  - work_mem=16MB
+  - -c
+  - maintenance_work_mem=128MB
+  - -c
+  - effective_cache_size=768MB
+  - -c
+  - max_connections=120
+  - -c
+  - log_min_duration_statement=500
+  - -c
+  - log_connections=on
+  - -c
+  - log_disconnections=on
+
+services:
+  pg-primary:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pg-primary
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PG_PRIMARY_PORT:-5432}:5432"
+    volumes:
+      - pg_primary_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - ./config/postgres:/demo-config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [edb-demo]
+
+  pg-standby:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pg-standby
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PG_STANDBY_PORT:-5433}:5432"
+    volumes:
+      - pg_standby_data:/var/lib/postgresql/data
+    networks: [edb-demo]
+
+  pg-restore:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pg-restore
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PG_RESTORE_PORT:-5434}:5432"
+    volumes:
+      - pg_restore_data:/var/lib/postgresql/data
+    networks: [edb-demo]
+
+  barman:
+    build:
+      context: .
+      dockerfile: docker/barman/Dockerfile
+    image: edb-demo-barman:local
+    container_name: barman
+    labels: *project-labels
+    user: root
+    environment:
+      BARMAN_USER: ${BARMAN_USER:-barman}
+      BARMAN_PASSWORD: ${BARMAN_PASSWORD:-barman_demo_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_demo_password}
+      PGPASSWORD: ${BARMAN_PASSWORD:-barman_demo_password}
+    command: ["bash", "-lc", "mkdir -p /var/lib/barman/pg-primary /etc/barman.d && cp /demo-config/pg-primary.conf /etc/barman.d/pg-primary.conf && sed -i \"s/password=barman_demo_password/password=${BARMAN_PASSWORD:-barman_demo_password}/g\" /etc/barman.d/pg-primary.conf && chown -R barman:barman /var/lib/barman /etc/barman.d && chmod -R u+rwX,g+rwX /var/lib/barman /etc/barman.d && sleep infinity"]
+    volumes:
+      - barman_data:/var/lib/barman
+      - ./config/barman:/demo-config:ro
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    networks: [edb-demo]
+
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE:-edb-demo-postgres-exporter:v0.15.0}
+    container_name: postgres-exporter
+    labels: *project-labels
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_demo_password}@pg-primary:5432/${POSTGRES_DB:-postgres}?sslmode=disable
+    ports:
+      - "9187:9187"
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    networks: [edb-demo]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-edb-demo-prometheus:v2.54.1}
+    container_name: prometheus
+    labels: *project-labels
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks: [edb-demo]
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-edb-demo-grafana:11.1.4}
+    container_name: grafana
+    labels: *project-labels
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [edb-demo]
+
+  maintenance:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: maintenance-scheduler
+    labels: *project-labels
+    environment: *pg-env
+    command: ["bash", "-lc", "while true; do echo '[scheduler] VACUUM ANALYZE demo.public.orders'; PGPASSWORD=$$POSTGRES_PASSWORD psql -h pg-primary -U $$POSTGRES_USER -d $$DEMO_DB -c 'VACUUM (ANALYZE) public.orders;' || true; sleep 3600; done"]
+    profiles: ["scheduler"]
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    networks: [edb-demo]
+
+  efm-node1:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: efm-node1
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${EFM_NODE1_PORT:-5441}:5432"
+    volumes:
+      - efm_node1_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    networks: [edb-demo]
+
+  efm-node2:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: efm-node2
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${EFM_NODE2_PORT:-5442}:5432"
+    volumes:
+      - efm_node2_data:/var/lib/postgresql/data
+    networks: [edb-demo]
+
+  efm-node3:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: efm-node3
+    labels: *project-labels
+    environment: *pg-env
+    command: ["bash", "-lc", "echo 'OSS EFM witness simulation container'; sleep infinity"]
+    ports:
+      - "${EFM_NODE3_PORT:-5443}:5432"
+    networks: [edb-demo]
+
+  haproxy:
+    image: ${HAPROXY_IMAGE:-edb-demo-haproxy:2.9}
+    container_name: edb-demo-haproxy
+    labels: *project-labels
+    ports:
+      - "${HAPROXY_PORT:-15432}:5432"
+    volumes:
+      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [edb-demo]
+
+  pgd-node1:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pgd-node1
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PGD_NODE1_PORT:-5451}:5432"
+    volumes:
+      - pgd_node1_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    networks: [edb-demo]
+
+  pgd-node2:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pgd-node2
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PGD_NODE2_PORT:-5452}:5432"
+    volumes:
+      - pgd_node2_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    networks: [edb-demo]
+
+  pgd-node3:
+    image: ${POSTGRES_IMAGE:-edb-demo-postgres:16-bookworm}
+    container_name: pgd-node3
+    labels: *project-labels
+    environment: *pg-env
+    command: *pg-command
+    ports:
+      - "${PGD_NODE3_PORT:-5453}:5432"
+    volumes:
+      - pgd_node3_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    networks: [edb-demo]
+
+networks:
+  edb-demo:
+    name: edb-demo
+
+volumes:
+  pg_primary_data:
+  pg_standby_data:
+  pg_restore_data:
+  barman_data:
+  grafana_data:
+  efm_node1_data:
+  efm_node2_data:
+  pgd_node1_data:
+  pgd_node2_data:
+  pgd_node3_data:

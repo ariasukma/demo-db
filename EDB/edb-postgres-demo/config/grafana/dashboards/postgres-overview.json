@@ -1,0 +1,33 @@
+{
+  "title": "PostgreSQL Demo Overview",
+  "uid": "postgres-demo-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Postgres Up",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "pg_up", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Connections",
+      "gridPos": {"x": 6, "y": 0, "w": 9, "h": 6},
+      "targets": [{"expr": "sum(pg_stat_activity_count) by (datname)", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Database Size",
+      "gridPos": {"x": 15, "y": 0, "w": 9, "h": 6},
+      "targets": [{"expr": "pg_database_size_bytes", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Locks",
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6},
+      "targets": [{"expr": "sum(pg_locks_count) by (mode)", "refId": "A"}]
+    }
+  ]
+}

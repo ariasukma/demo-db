@@ -1,0 +1,63 @@
+name: ${COMPOSE_PROJECT_NAME:-edb_postgres_demo}_pgd_edb
+
+x-project-labels: &project-labels
+  project: edb-postgres-demo
+
+services:
+  pgd-node1:
+    image: ${EDB_PGD_IMAGE}
+    container_name: edb-pgd-node1
+    labels: *project-labels
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EDB_REPO_TOKEN: ${EDB_REPO_TOKEN:-replace-me}
+      EDB_REPO_USERNAME: ${EDB_REPO_USERNAME}
+      EDB_REPO_PASSWORD: ${EDB_REPO_PASSWORD}
+    ports:
+      - "${PGD_NODE1_PORT:-5451}:5432"
+    volumes:
+      - edb_pgd_node1_data:/var/lib/edb/data
+
+  pgd-node2:
+    image: ${EDB_PGD_IMAGE}
+    container_name: edb-pgd-node2
+    labels: *project-labels
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EDB_REPO_TOKEN: ${EDB_REPO_TOKEN:-replace-me}
+      EDB_REPO_USERNAME: ${EDB_REPO_USERNAME}
+      EDB_REPO_PASSWORD: ${EDB_REPO_PASSWORD}
+    ports:
+      - "${PGD_NODE2_PORT:-5452}:5432"
+    volumes:
+      - edb_pgd_node2_data:/var/lib/edb/data
+
+  pgd-node3:
+    image: ${EDB_PGD_IMAGE}
+    container_name: edb-pgd-node3
+    labels: *project-labels
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EDB_REPO_TOKEN: ${EDB_REPO_TOKEN:-replace-me}
+      EDB_REPO_USERNAME: ${EDB_REPO_USERNAME}
+      EDB_REPO_PASSWORD: ${EDB_REPO_PASSWORD}
+    ports:
+      - "${PGD_NODE3_PORT:-5453}:5432"
+    volumes:
+      - edb_pgd_node3_data:/var/lib/edb/data
+
+  pgd-admin:
+    image: ${EDB_PGD_IMAGE}
+    container_name: edb-pgd-admin
+    labels: *project-labels
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EDB_REPO_TOKEN: ${EDB_REPO_TOKEN:-replace-me}
+      EDB_REPO_USERNAME: ${EDB_REPO_USERNAME}
+      EDB_REPO_PASSWORD: ${EDB_REPO_PASSWORD}
+    command: ["bash", "-lc", "sleep infinity"]
+
+volumes:
+  edb_pgd_node1_data:
+  edb_pgd_node2_data:
+  edb_pgd_node3_data:
